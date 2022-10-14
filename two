@@ -54,7 +54,7 @@ function Entity:FadeTransparency(targetTransparency, finishedCallback)
 			{Transparency = targetTransparency},
 			{0.0000002, "Quad", "Out"}
 		).Completed:Connect(function()
-
+			-- race condition? god I hope not
 			if finishedCallback and not processedCallback then
 				processedCallback = true
 				finishedCallback()
@@ -82,6 +82,7 @@ function Entity:WalkThroughWaypoints(voxelpoints, waypoints, startX, startZ)
 		self.stateData.walkingThroughWaypoints = true
 	end
 	
+	-- replication fix?
 	if not self:BelongsToMyBakery() then
 		self.model.HumanoidRootPart.Anchored = false
 	end
@@ -94,6 +95,10 @@ function Entity:WalkThroughWaypoints(voxelpoints, waypoints, startX, startZ)
 		self.xVoxel = voxelpoints[i].x
 		self.zVoxel = voxelpoints[i].y
 		
+		-- no need for position table updates if it's not my client.
+		-- only the owner of the bakery does pathfinding calculations.
+		-- if replication occurs, the host client sends the pathfinding
+		-- data.... it is not recalculated
 		if self:BelongsToMyBakery() then
 			self:GetMyFloor():BroadcastNPCPositionChange(self, oldX, oldZ)
 		end
@@ -128,23 +133,29 @@ function Customer:ChangeToWaitForOrderState()
 	
 	self:SetCustomerState("ThinkingAboutOrder")
 	
+	-- make the humanoid sit
 	self:SitInSeat(seatLeaf).Completed:Connect(function()
 		self.humanoid:SetStateEnabled(Enum.HumanoidStateType.Seated, true)
 		
+		-- change voxel position to match the seat
 		self.xVoxel = seatLeaf.xVoxel
 		self.zVoxel = seatLeaf.zVoxel
 		
 		coroutine.wrap(function()
 			
+			-- start reading the menu
 			self:ReadMenu()
 			if self.isDeleted or self.state ~= "ThinkingAboutOrder" then
 				return
 			end
 			
+			-- stop reading the menu
 			self:StopReadingMenu()
 			
+			-- advance to next state
 			self:SetCustomerState("DecidedOnOrder")
 			
+			-- only set my entire group to ready to order when everybody has decided on the order
 			local myGroup = {self}
 			for _, partner in ipairs(self.stateData.queueGroup) do
 				if not partner.isDeleted then
@@ -159,6 +170,7 @@ function Customer:ChangeToWaitForOrderState()
 				end
 			end
 			
+			-- if the entire group is ready, then have them say it in sync
 			if not foundUndecidedMember then
 				for _, groupMember in ipairs(myGroup) do
 					groupMember:ReadyToOrder()
@@ -178,6 +190,7 @@ function Customer:ChangeToEatingState()
 			return
 		end
 		
+		-- first, check for silverware
 		local myFloor = self:GetMyFloor()
 		table.sort(myFloor.silverwareTrays, function(a, b)
 			local aDist = math.abs(self.xVoxel - a.xVoxel) + math.abs(self.zVoxel - a.zVoxel)
@@ -192,6 +205,7 @@ function Customer:ChangeToEatingState()
 		
 		self:SetCustomerState("EatingFood")
 		
+		-- if there's a path to me, delete it
 		if self.stateData.pathToMe then
 			_L.Variables.MyBakery:CleanupAnimatedPath()
 			self.stateData.pathToMe = nil
@@ -201,6 +215,7 @@ function Customer:ChangeToEatingState()
 		local function checkForSaladBars(isWalkingFromSilverware, doWalkBackToSeat)
 			didSaladCheck = true
 			local didWalkToSalad = false
+			-- walk to salad bar sometimes
 			local isWalkingToSaladBar = false
 			for _, saladBar in ipairs(myFloor.saladBars) do
 				if math.random() < 0.20 then
@@ -249,6 +264,7 @@ function Customer:ChangeToEatingState()
 		local function checkForDessertBars(isWalkingFromSilverware, doWalkBackToSeat)
 			didDessertCheck = true
 			local didWalkToDessert = false
+			-- walk to salad bar sometimes
 			local isWalkingToDessertBar = false
 			for _, dessertBar in ipairs(myFloor.dessertBars) do
 				if math.random() < 0.20 then
@@ -293,6 +309,7 @@ function Customer:ChangeToEatingState()
 			return didWalkToDessert
 		end
 		
+		-- create food model for the customer
 		if not self.stateData.foodOrder then
 			self:ForcedToLeave()
 			return
@@ -345,6 +362,7 @@ function Customer:ChangeToEatingState()
 					end
 					self:SitInSeat(self.stateData.mySeat)
 					
+					-- hold silverware
 					local isGold = tray.ID == "25"
 					local function weldToHand(part, hand)
 						local weld = Instance.new("Weld", part)
@@ -928,6 +946,8 @@ function Waiter:CheckForDishPickup()
 				return
 			end
 			
+			-- walk to the dishwasher to deposit
+			-- TODO face direction
 			self:WalkToNewFloor(dishwasher:GetMyFloor(), function()
 				
 				if dishwasher.isDeleted then
@@ -941,6 +961,7 @@ function Waiter:CheckForDishPickup()
 				
 				self:WalkToPoint(dishwasher.xVoxel, dishwasher.yVoxel, dishwasher.zVoxel, function()
 					
+					-- put down the dish
 					self:DropFood()
 					
 					if dishwasher.isDeleted then
